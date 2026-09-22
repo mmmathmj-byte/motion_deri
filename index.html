@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>미분 팡팡! 모션 인식 게임</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Jua&family=Nunito:wght@700&display=swap');
+        
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Jua', sans-serif; /* 학생 친화적인 귀여운 폰트 */
+            background-color: #f0fdf4;
+            touch-action: none;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        /* 비디오는 좌우 반전하여 거울처럼 보이게 함 */
+        #video-element {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 1;
+            opacity: 0.8; /* 캔버스 요소가 잘 보이도록 약간 투명하게 */
+        }
+
+        /* 캔버스는 비디오 위에 겹침 */
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            pointer-events: none; /* UI 레이어 통과해서 캔버스/버튼 클릭 가능하게 */
+            display: flex;
+            flex-direction: column;
+        }
+
+        .interactive-btn {
+            pointer-events: auto;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .interactive-btn:hover {
+            transform: translateY(-2px) scale(1.05);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* 수식 전용 폰트 스타일 */
+        .math-text {
+            font-family: 'Nunito', sans-serif;
+            font-weight: 700;
+        }
+        
+        .screen-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(255,255,255,0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 30;
+            pointer-events: auto;
+        }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- 배경 카메라 화면 -->
+        <video id="video-element" autoplay playsinline></video>
+        
+        <!-- 게임 요소가 그려지는 캔버스 -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- UI 요소 (점수, 문제 등) -->
+        <div id="ui-layer">
+            <div class="w-full flex justify-between items-start p-4">
+                <div class="bg-white/90 backdrop-blur rounded-2xl px-6 py-3 shadow-lg border-2 border-green-400">
+                    <span class="text-2xl text-gray-700">점수: </span>
+                    <span id="score-display" class="text-4xl text-green-600">0</span>
+                </div>
+                <div class="bg-white/90 backdrop-blur rounded-2xl px-6 py-3 shadow-lg border-2 border-red-400">
+                    <span class="text-2xl text-gray-700">남은 기회: </span>
+                    <span id="lives-display" class="text-4xl text-red-500 flex gap-1"></span>
+                </div>
+            </div>
+
+            <div class="w-full flex justify-center mt-4">
+                <div id="problem-container" class="bg-blue-500/90 backdrop-blur text-white rounded-3xl px-10 py-6 shadow-2xl border-4 border-blue-300 hidden transform transition-all">
+                    <h2 class="text-3xl mb-2 text-blue-100 text-center">다음 함수의 도함수/미분계수는?</h2>
+                    <div id="problem-text" class="text-5xl md:text-6xl math-text text-center tracking-wider"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 시작 화면 -->
+        <div id="start-screen" class="screen-overlay">
+            <h1 class="text-6xl md:text-8xl text-transparent bg-clip-text bg-gradient-to-r from-blue-500 to-green-500 mb-6 drop-shadow-sm">미분 팡팡!</h1>
+            <p class="text-2xl text-gray-600 mb-8 text-center max-w-lg">웹캠을 켜고 손을 움직여<br>떨어지는 정답을 터치하세요!</p>
+            <div id="loading-msg" class="text-xl text-blue-500 mb-4 animate-pulse">카메라와 AI 모델을 불러오는 중...</div>
+            <button id="start-btn" class="interactive-btn hidden bg-gradient-to-r from-green-400 to-blue-500 text-white text-3xl px-12 py-5 rounded-full shadow-xl border-4 border-white">
+                게임 시작하기
+            </button>
+        </div>
+
+        <!-- 종료 화면 -->
+        <div id="game-over-screen" class="screen-overlay hidden">
+            <h1 class="text-7xl text-red-500 mb-4 drop-shadow-md">게임 종료</h1>
+            <p class="text-3xl text-gray-700 mb-2">최종 점수</p>
+            <p id="final-score" class="text-8xl text-blue-600 mb-10 math-text">0</p>
+            <button id="restart-btn" class="interactive-btn bg-gradient-to-r from-blue-500 to-purple-500 text-white text-3xl px-12 py-5 rounded-full shadow-xl border-4 border-white">
+                다시 하기
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- 수학 문제 생성 로직 ---
+        class MathGenerator {
+            static generate() {
+                const type = Math.random() < 0.6 ? 'derivative' : 'coefficient'; // 60% 도함수, 40% 미분계수
+                
+                // 다항식 생성: ax^n
+                let a = Math.floor(Math.random() * 5) + 1; // 1 ~ 5
+                let n = Math.floor(Math.random() * 3) + 2; // 2 ~ 4 (2차~4차)
+                
+                // 마이너스 계수 가끔 추가
+                if(Math.random() < 0.3) a *= -1;
+
+                let problemText = "";
+                let correctAnswer = "";
+                let wrongAnswers = [];
+
+                if (type === 'derivative') {
+                    // 도함수 문제: f(x) = ax^n
+                    problemText = `f(x) = ${a}x${n > 1 ? '^'+n : ''}`;
+                    
+                    let newA = a * n;
+                    let newN = n - 1;
+                    
+                    correctAnswer = `${newA}x${newN > 1 ? '^'+newN : (newN === 1 ? '' : '')}`;
+                    if(newN === 0) correctAnswer = `${newA}`; // 상수항 처리
+
+                    // 오답 생성 (흔한 실수들)
+                    wrongAnswers.push(`${a}x${newN > 1 ? '^'+newN : ''}`); // 계수 안 곱함
+                    wrongAnswers.push(`${newA}x${n}`); // 차수 안 내림
+                    wrongAnswers.push(`${a*n + 1}x${newN > 1 ? '^'+newN : ''}`); // 아무 숫자
+                    wrongAnswers.push(`${newA}x${newN > 1 ? '^'+(newN+1) : '^2'}`); // 차수 잘못 내림
+
+                } else {
+                    // 미분계수 문제: f'(c)
+                    let c = Math.floor(Math.random() * 3) + 1; // 1 ~ 3
+                    if(Math.random() < 0.5) c *= -1; // 음수도 포함
+
+                    problemText = `f(x)=${a}x${n > 1 ? '^'+n : ''}, f'(${c})=?`;
+                    
+                    let ansValue = a * n * Math.pow(c, n - 1);
+                    correctAnswer = ansValue.toString();
+
+                    // 오답 생성
+                    wrongAnswers.push((a * Math.pow(c, n)).toString()); // 미분 안하고 대입
+                    wrongAnswers.push((a * n * Math.pow(c, n)).toString()); // 차수 안 내리고 대입
+                    wrongAnswers.push((ansValue + (Math.random()>0.5? 1 : -1) * (Math.floor(Math.random()*5)+1)).toString()); // 비슷한 숫자
+                    wrongAnswers.push((-ansValue).toString()); // 부호 틀림
+                }
+
+                // 중복 제거 및 섞기, 3개만 추출
+                wrongAnswers = [...new Set(wrongAnswers)].filter(ans => ans !== correctAnswer);
+                while(wrongAnswers.length < 3) {
+                    wrongAnswers.push((parseInt(correctAnswer || "10") + Math.floor(Math.random()*10 - 5)).toString());
+                }
+                wrongAnswers = wrongAnswers.slice(0, 3);
+
+                let choices = [correctAnswer, ...wrongAnswers];
+                choices.sort(() => Math.random() - 0.5); // 보기 섞기
+
+                return {
+                    text: problemText,
+                    correct: correctAnswer,
+                    choices: choices
+                };
+            }
+        }
+
+        // --- 게임 상태 및 객체 ---
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+
+        // 화면 크기 맞춤
+        function resizeCanvas() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        let gameState = {
+            isRunning: false,
+            score: 0,
+            lives: 3,
+            currentProblem: null,
+            bubbles: [],
+            particles: [],
+            lastHandPos: null, // {x, y} 캔버스 좌표
+            lastSpawnTime: 0
+        };
+
+        // 떨어지는 정답 버블 클래스
+        class Bubble {
+            constructor(text, isCorrect, x) {
+                this.text = text;
+                this.isCorrect = isCorrect;
+                this.radius = Math.min(width, height) * 0.08; // 화면 크기에 비례
+                if(this.radius < 40) this.radius = 40;
+                if(this.radius > 80) this.radius = 80;
+                this.x = x;
+                this.y = -this.radius;
+                
+                // 난이도(점수)에 따라 속도 증가
+                let baseSpeed = height * 0.003;
+                let speedMultiplier = 1 + (gameState.score * 0.02);
+                this.speed = baseSpeed * Math.min(speedMultiplier, 3); 
+                
+                this.color = `hsl(${Math.random() * 360}, 70%, 75%)`; // 파스텔톤
+                this.markedForDeletion = false;
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > height + this.radius) {
+                    this.markedForDeletion = true;
+                    // 정답을 놓친 경우 라이프 감소
+                    if (this.isCorrect && gameState.isRunning) {
+                        loseLife();
+                    }
+                }
+            }
+
+            draw(ctx) {
+                ctx.save();
+                
+                // 그림자 효과
+                ctx.shadowColor = 'rgba(0,0,0,0.2)';
+                ctx.shadowBlur = 10;
+                ctx.shadowOffsetY = 5;
+
+                // 버블 배경
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.fill();
+                
+                // 테두리
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = this.color;
+                ctx.stroke();
+
+                ctx.restore();
+
+                // 텍스트 (수식)
+                ctx.fillStyle = '#333';
+                ctx.font = `bold ${this.radius * 0.6}px 'Nunito', sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                // ^ 기호를 찾아 위첨자로 그리기 (간단한 구현)
+                if (this.text.includes('^')) {
+                    let parts = this.text.split('^');
+                    let baseText = parts[0];
+                    let expText = parts[1];
+                    
+                    ctx.fillText(baseText, this.x - 10, this.y);
+                    ctx.font = `bold ${this.radius * 0.4}px 'Nunito', sans-serif`;
+                    ctx.fillText(expText, this.x + ctx.measureText(baseText).width/2, this.y - this.radius*0.3);
+                } else {
+                    ctx.fillText(this.text, this.x, this.y);
+                }
+            }
+        }
+
+        // 파티클 (터지는 효과)
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 10;
+                this.vy = (Math.random() - 0.5) * 10;
+                this.radius = Math.random() * 5 + 3;
+                this.color = color;
+                this.alpha = 1;
+                this.markedForDeletion = false;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= 0.02;
+                if (this.alpha <= 0) this.markedForDeletion = true;
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        const videoElement = document.getElementById('video-element');
+        let hands = null;
+        let camera = null;
+        
+        async function initCameraAndAI() {
+            try {
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1, // 하나만 인식하여 성능 최적화
+                    modelComplexity: 0, // 빠른 인식 (0 또는 1)
+                    minDetectionConfidence: 0.7,
+                    minTrackingConfidence: 0.7
+                });
+
+                hands.onResults(onResults);
+
+                camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await hands.send({image: videoElement});
+                    },
+                    width: 640,
+                    height: 480
+                });
+
+                await camera.start();
+                
+                // 로딩 완료 후 UI 처리
+                document.getElementById('loading-msg').classList.add('hidden');
+                document.getElementById('start-btn').classList.remove('hidden');
+
+            } catch (error) {
+                console.error("Camera/AI Init Error:", error);
+                document.getElementById('loading-msg').textContent = "카메라를 사용할 수 없습니다. 권한을 확인해주세요.";
+                document.getElementById('loading-msg').classList.replace('text-blue-500', 'text-red-500');
+            }
+        }
+
+        // 손 인식 결과 처리
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // 8번 랜드마크가 검지 손가락 끝(Index Finger Tip)
+                const indexTip = results.multiHandLandmarks[0][8];
+                
+                // 비디오가 좌우 반전되어 있으므로 X좌표를 1 - x 로 변환해야 화면 위치와 맞음
+                // mediapipe 좌표는 0~1 사이 정규화된 값
+                let flippedX = 1 - indexTip.x;
+                
+                gameState.lastHandPos = {
+                    x: flippedX * width,
+                    y: indexTip.y * height
+                };
+            } else {
+                gameState.lastHandPos = null;
+            }
+        }
+
+        function checkCollision() {
+            if (!gameState.lastHandPos || !gameState.isRunning) return;
+
+            const hx = gameState.lastHandPos.x;
+            const hy = gameState.lastHandPos.y;
+
+            for (let i = 0; i < gameState.bubbles.length; i++) {
+                let b = gameState.bubbles[i];
+                // 점과 원의 충돌 판정 (거리 계산)
+                let dx = hx - b.x;
+                let dy = hy - b.y;
+                let distance = Math.sqrt(dx * dx + dy * dy);
+
+                // 손가락 터치 범위 약간 넉넉하게
+                if (distance < b.radius + 20) {
+                    handleHit(b);
+                    break; // 한 프레임에 하나만 터치
+                }
+            }
+        }
+
+        function handleHit(bubble) {
+            bubble.markedForDeletion = true;
+            createExplosion(bubble.x, bubble.y, bubble.isCorrect ? '#4ade80' : '#f87171');
+
+            if (bubble.isCorrect) {
+                // 정답!
+                gameState.score += 10;
+                document.getElementById('score-display').textContent = gameState.score;
+                document.getElementById('score-display').classList.add('scale-150', 'text-yellow-500');
+                setTimeout(() => document.getElementById('score-display').classList.remove('scale-150', 'text-yellow-500'), 300);
+                
+                // 화면의 나머지 오답 버블들도 지우고 새 문제 출제
+                gameState.bubbles = []; 
+                setNewProblem();
+            } else {
+                // 오답!
+                loseLife();
+            }
+        }
+
+        function loseLife() {
+            gameState.lives--;
+            updateLivesDisplay();
+            
+            // 화면 흔들림 효과
+            document.body.classList.add('bg-red-200');
+            setTimeout(() => document.body.classList.remove('bg-red-200'), 150);
+
+            if (gameState.lives <= 0) {
+                endGame();
+            }
+        }
+
+        function createExplosion(x, y, color) {
+            for(let i=0; i<20; i++) {
+                gameState.particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function updateLivesDisplay() {
+            const container = document.getElementById('lives-display');
+            container.innerHTML = '';
+            for(let i=0; i<3; i++) {
+                if(i < gameState.lives) {
+                    container.innerHTML += '<span>❤️</span>'; // 꽉찬 하트
+                } else {
+                    container.innerHTML += '<span class="opacity-30 filter grayscale">❤️</span>'; // 빈 하트
+                }
+            }
+        }
+
+        function setNewProblem() {
+            gameState.currentProblem = MathGenerator.generate();
+            const probEl = document.getElementById('problem-text');
+            
+            // 문제 텍스트에 ^ 있으면 HTML 위첨자로 변환 표시
+            let displayText = gameState.currentProblem.text.replace(/\^(\d+)/g, '<sup>$1</sup>');
+            probEl.innerHTML = displayText;
+            
+            document.getElementById('problem-container').classList.remove('hidden');
+            
+            // 보기들을 기반으로 버블 생성 예약 (잠시 후 스폰되도록 딜레이)
+            gameState.bubbles = []; // 기존 버블 초기화
+            gameState.lastSpawnTime = Date.now();
+        }
+
+        function spawnBubbles() {
+            if(!gameState.currentProblem) return;
+
+            let choices = gameState.currentProblem.choices;
+            let gap = width / (choices.length + 1);
+
+            for (let i = 0; i < choices.length; i++) {
+                let text = choices[i];
+                let isCorrect = (text === gameState.currentProblem.correct);
+                // 화면 가로에 일정 간격으로 배치
+                let xPos = gap * (i + 1) + (Math.random() * 40 - 20); // 약간의 무작위성
+                gameState.bubbles.push(new Bubble(text, isCorrect, xPos));
+            }
+        }
+
+        function gameLoop() {
+            // 캔버스 초기화
+            ctx.clearRect(0, 0, width, height);
+
+            if (gameState.isRunning) {
+                // 새 버블 스폰 로직 (현재 버블이 없고, 문제 출제 후 1초 지났을 때)
+                if (gameState.bubbles.length === 0 && (Date.now() - gameState.lastSpawnTime > 1000)) {
+                    spawnBubbles();
+                }
+
+                // 버블 업데이트 및 그리기
+                gameState.bubbles = gameState.bubbles.filter(b => !b.markedForDeletion);
+                gameState.bubbles.forEach(b => {
+                    b.update();
+                    b.draw(ctx);
+                });
+
+                // 충돌 검사
+                checkCollision();
+            }
+
+            // 파티클 업데이트 및 그리기
+            gameState.particles = gameState.particles.filter(p => !p.markedForDeletion);
+            gameState.particles.forEach(p => {
+                p.update();
+                p.draw(ctx);
+            });
+
+            // 손가락 위치 그리기 (조준점/커서 역할)
+            if (gameState.lastHandPos) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(gameState.lastHandPos.x, gameState.lastHandPos.y, 25, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(59, 130, 246, 0.4)'; // 파란색 반투명
+                ctx.fill();
+                
+                ctx.beginPath();
+                ctx.arc(gameState.lastHandPos.x, gameState.lastHandPos.y, 10, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.fill();
+                
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = '#3b82f6';
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 게임 제어 함수
+        function startGame() {
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.add('hidden');
+            
+            gameState.isRunning = true;
+            gameState.score = 0;
+            gameState.lives = 3;
+            gameState.bubbles = [];
+            gameState.particles = [];
+            
+            document.getElementById('score-display').textContent = gameState.score;
+            updateLivesDisplay();
+            
+            setNewProblem();
+        }
+
+        function endGame() {
+            gameState.isRunning = false;
+            document.getElementById('problem-container').classList.add('hidden');
+            document.getElementById('game-over-screen').classList.remove('hidden');
+            document.getElementById('final-score').textContent = gameState.score;
+        }
+
+        // 이벤트 리스너 등록
+        document.getElementById('start-btn').addEventListener('click', startGame);
+        document.getElementById('restart-btn').addEventListener('click', startGame);
+
+        // 초기화 실행
+        initCameraAndAI();
+        gameLoop(); // 그리기 루프는 즉시 시작 (손 커서는 대기 화면에서도 보이게)
+
+    </script>
+</body>
+</html>
